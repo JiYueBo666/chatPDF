@@ -1,4 +1,5 @@
-import os
+from ast import For
+import os,re
 from openai import OpenAI
 from dotenv import load_dotenv, find_dotenv
 from langchain_openai import ChatOpenAI
@@ -17,12 +18,12 @@ _ = load_dotenv(find_dotenv())
 openai_api_key = os.environ["openai_api_key"]
 base_url = os.environ["base_url"]
 
-
+pattern = re.compile(r'[^\u4e00-\u9fff](\n)[^\u4e00-\u9fff]', re.DOTALL)
 
 class PDFQuery:
     def __init__(self) -> None:
         self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=100, chunk_overlap=50
+            chunk_size=200, chunk_overlap=50
         )
         self.embeddings = OpenAIEmbeddings(
             openai_api_key=openai_api_key, base_url=base_url,
@@ -64,8 +65,7 @@ class PDFQuery:
         “没有检索到相关内容呢”
         """
 
-
-    def ask(self, question: str) -> str:
+    def search_doc(self,question:str):
         if self.chain is None:
             response = "请添加一个文件"
         else:
@@ -73,12 +73,13 @@ class PDFQuery:
                 docs=self.ensemble_retriever.get_relevant_documents(question)
             else:
                 docs = self.db.get_relevant_documents(question)
-            response = self.chain.run(input_documents=docs, question=question)
+        return docs
+
+    def ask(self, docs,question) -> str:
         if docs is not None:
             for i,doc in enumerate(docs):
                 content=f"检索到的第{i}个上下文：{doc.page_content}\n"
                 self.retriever_contents.append(content)
-
         prompt=PromptTemplate.from_template(self.prompt_template)
         template_value = {
             'question': question,
@@ -95,13 +96,14 @@ class PDFQuery:
         result=chain.invoke(template_value)
         return result
 
-        #return response
-
     def ingest(self, file_path: os.PathLike) -> None:
         loader = PyPDFium2Loader(file_path)
         documents = loader.load()
         splitted_documents = self.text_splitter.split_documents(documents)
-
+        #清洗文档
+        for i ,doc in enumerate(splitted_documents):
+            doc.page_content = re.sub(pattern, lambda match: match.group(0).replace('\n', ''),
+    doc.page_content)
         self.db = Chroma.from_documents(
             splitted_documents, self.embeddings
         ).as_retriever(search_kwargs={"k": 3})

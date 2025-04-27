@@ -19,7 +19,7 @@ def display_messages():
     for i,(msg,is_user) in enumerate(st.session_state['messages']):
         message(msg,is_user=is_user,key=str(i))
     st.session_state['thinking_spinner']=st.empty()
-
+    st.session_state['search_spinner']=st.empty()
 def display_retrieved_docs():
     if hasattr(st.session_state['pdfquery'], 'retriever_contents') and st.session_state['pdfquery'].retriever_contents:
         with st.expander("查看检索到的文档内容"):
@@ -27,10 +27,17 @@ def display_retrieved_docs():
                 st.markdown(content)
         st.session_state['pdfquery'].retriever_contents=[]
 def process_input():
+    
+
     if st.session_state['user_input'] and len(st.session_state['user_input'].strip())>0:
         user_text=st.session_state['user_input'].strip()
+
+        with st.session_state['search_spinner'],st.spinner("正在召回文本"):
+            docs=st.session_state['pdfquery'].search_doc(user_text)
+
         with st.session_state['thinking_spinner'],st.spinner("Thinking"):
-            query_text=st.session_state['pdfquery'].ask(user_text)
+            query_text=st.session_state['pdfquery'].ask(docs,user_text)
+        
         st.session_state['messages'].append((user_text,True))
         st.session_state['messages'].append((query_text,False))
         display_retrieved_docs()

@@ -20,6 +20,12 @@ def display_messages():
         message(msg,is_user=is_user,key=str(i))
     st.session_state['thinking_spinner']=st.empty()
 
+def display_retrieved_docs():
+    if hasattr(st.session_state['pdfquery'], 'retriever_contents') and st.session_state['pdfquery'].retriever_contents:
+        with st.expander("查看检索到的文档内容"):
+            for content in st.session_state['pdfquery'].retriever_contents:
+                st.markdown(content)
+        st.session_state['pdfquery'].retriever_contents=[]
 def process_input():
     if st.session_state['user_input'] and len(st.session_state['user_input'].strip())>0:
         user_text=st.session_state['user_input'].strip()
@@ -27,6 +33,7 @@ def process_input():
             query_text=st.session_state['pdfquery'].ask(user_text)
         st.session_state['messages'].append((user_text,True))
         st.session_state['messages'].append((query_text,False))
+        display_retrieved_docs()
 
 def read_and_save_file():
     st.session_state["pdfquery"].forget()  # to reset the knowledge base
@@ -86,6 +93,6 @@ def main():
     st.text_input("Message", key="user_input", disabled=not is_openai_api_key_set(), on_change=process_input)
 
     st.divider()
-    st.markdown("Source code: [Github](https://github.com/Anil-matcha/ChatPDF)")
+    st.markdown("Source code: [Github](https://github.com/JiYueBo666/chatPDF)")
 if __name__=="__main__":
     main()

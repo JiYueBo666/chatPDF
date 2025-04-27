@@ -22,7 +22,7 @@ base_url = os.environ["base_url"]
 class PDFQuery:
     def __init__(self) -> None:
         self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000, chunk_overlap=200
+            chunk_size=100, chunk_overlap=50
         )
         self.embeddings = OpenAIEmbeddings(
             openai_api_key=openai_api_key, base_url=base_url,

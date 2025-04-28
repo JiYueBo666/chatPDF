@@ -27,7 +27,6 @@ def display_retrieved_docs():
                 st.markdown(content)
         st.session_state['pdfquery'].retriever_contents=[]
 def process_input():
-    
 
     if st.session_state['user_input'] and len(st.session_state['user_input'].strip())>0:
         user_text=st.session_state['user_input'].strip()

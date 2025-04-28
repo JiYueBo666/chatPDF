@@ -1,17 +1,22 @@
 from ast import For
-import os,re
-from openai import OpenAI
-from dotenv import load_dotenv, find_dotenv
-from langchain_openai import ChatOpenAI
-from langchain.document_loaders import PyPDFium2Loader
-from langchain.chains.question_answering import load_qa_chain
+from langchain_core.documents.base import Document
+import os
+import re
+
+from dotenv import find_dotenv, load_dotenv
+from langchain_community.document_loaders import PyPDFium2Loader
+from langchain_openai import OpenAIEmbeddings
+from langchain_community.retrievers import BM25Retriever,TFIDFRetriever
+from langchain.retrievers import EnsembleRetriever
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.vectorstores import Chroma
-from langchain.embeddings.openai import OpenAIEmbeddings
-from langchain.retrievers import BM25Retriever, EnsembleRetriever
+from langchain_community.vectorstores import Chroma
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import PromptTemplate
-
+from langchain_openai import ChatOpenAI
+from langchain_community.document_transformers import LongContextReorder
+from langchain.retrievers.contextual_compression import ContextualCompressionRetriever
+from langchain_community.document_compressors.rankllm_rerank import RankLLMRerank
+import jieba
 
 _ = load_dotenv(find_dotenv())
 
@@ -23,7 +28,9 @@ pattern = re.compile(r'[^\u4e00-\u9fff](\n)[^\u4e00-\u9fff]', re.DOTALL)
 class PDFQuery:
     def __init__(self) -> None:
         self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=200, chunk_overlap=50
+            chunk_size=200, chunk_overlap=50,
+        separators = [r"第\S*条 "],
+        is_separator_regex = True
         )
         self.embeddings = OpenAIEmbeddings(
             openai_api_key=openai_api_key, base_url=base_url,
@@ -65,21 +72,45 @@ class PDFQuery:
         “没有检索到相关内容呢”
         """
 
-    def search_doc(self,question:str):
-        if self.chain is None:
-            response = "请添加一个文件"
+    def search_doc(self, question: str) -> list[Document]:
+        #分词
+        sub_words = self.cut_words(question)
+        
+        #基于关键词检索文档
+        docs_search_by_key_words=[]
+        
+        for key_words in sub_words:
+            docs_key_words = self.bm25_retriever.invoke(key_words)  # 使用 invoke 替代 get_relevant_documents
+            
+            if len(docs_key_words) > 1:
+                docs_search_by_key_words.extend(docs_key_words)
+    
+        # 基于混合检索文档
+        if self.ensemble_retriever:
+            docs = self.ensemble_retriever.invoke(question)  # 使用 invoke 替代 get_relevant_documents
         else:
-            if self.ensemble_retriever:
-                docs=self.ensemble_retriever.get_relevant_documents(question)
-            else:
-                docs = self.db.get_relevant_documents(question)
-        return docs
+            docs = self.db.invoke(question)  # 使用 invoke 替代 get_relevant_documents
+        
+        # 合并关键词检索和语义检索的结果
+        combined_docs = []
+        seen_contents = set()
+        
+        # 首先添加语义检索结果
+        for doc in docs:
+            if doc.page_content not in seen_contents:
+                combined_docs.append(doc)
+                seen_contents.add(doc.page_content)
+        # 添加关键词检索结果
+        for doc in docs_search_by_key_words:
+            if doc.page_content not in seen_contents:
+                combined_docs.append(doc)
+                seen_contents.add(doc.page_content)
+        return combined_docs  
 
     def ask(self, docs,question) -> str:
         if docs is not None:
             for i,doc in enumerate(docs):
-                content=f"检索到的第{i}个上下文：{doc.page_content}\n"
-                self.retriever_contents.append(content)
+                self.retriever_contents.append(doc.page_content)
         prompt=PromptTemplate.from_template(self.prompt_template)
         template_value = {
             'question': question,
@@ -90,37 +121,43 @@ class PDFQuery:
             'doc5': docs[4].page_content if len(docs) > 4 else "",
             'doc6': docs[5].page_content if len(docs) > 5 else ""
         }
-        #prompt.invoke(template_value)
-
         chain=prompt | self.llm |StrOutputParser()
         result=chain.invoke(template_value)
         return result
+
+    def cut_words(self,query):
+        sub_words=[]
+        words = jieba.cut(query)
+        for word in words:
+            sub_words.append(word)
+        return sub_words
 
     def ingest(self, file_path: os.PathLike) -> None:
         loader = PyPDFium2Loader(file_path)
         documents = loader.load()
         splitted_documents = self.text_splitter.split_documents(documents)
-        #清洗文档
+    
+        # 清洗文档
         for i ,doc in enumerate(splitted_documents):
             doc.page_content = re.sub(pattern, lambda match: match.group(0).replace('\n', ''),
-    doc.page_content)
+        doc.page_content)
+    
+        # 创建 TFIDFRetriever
+        self.tfidf_retriever = TFIDFRetriever.from_documents(splitted_documents)
+    
         self.db = Chroma.from_documents(
             splitted_documents, self.embeddings
-        ).as_retriever(search_kwargs={"k": 3})
-
-        #创建BM2.5检索器
+        ).as_retriever(search_kwargs={"k": 2})
+    
+        # 创建BM2.5检索器
         self.bm25_retriever = BM25Retriever.from_documents(splitted_documents)
-        self.bm25_retriever.k=3#设置文档返回数量
-
+        self.bm25_retriever.k=2#设置文档返回数量
+    
         self.ensemble_retriever =  EnsembleRetriever(
-            retrievers=[self.db, self.bm25_retriever],
-            weights=[0.4, 0.6],
+            retrievers=[self.db, self.bm25_retriever, self.tfidf_retriever],
+            weights=[0.33, 0.33, 0.33],  # 调整权重
         )
-
-        self.chain = load_qa_chain(
-            ChatOpenAI(temperature=0, openai_api_key=openai_api_key, base_url=base_url),
-            chain_type="stuff",
-        )
+    
 
     def forget(self) -> None:
         self.db = None
@@ -128,3 +165,8 @@ class PDFQuery:
         self.bm25_retriever = None
         self.ensemble_retriever = None
         self.documents = None
+
+model=PDFQuery()
+
+path=r"D:\AIProject\chatPDF\data\中华人民共和国消费者权益保护法.pdf"
+
